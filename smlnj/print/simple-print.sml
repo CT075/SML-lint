@@ -1,15 +1,17 @@
 Control.Elab.unusedBindingWarn := false;
+CM.make "$smlnj/viscomp/basics.cm";
 
 signature LINT =
 sig
   val parseFile : string -> Ast.dec
   val pp_pat : Ast.pat -> string
   val pp_exp : Ast.exp -> bool -> string
+  val pp_dec : Ast.dec -> string
 end
 
 structure Lint : LINT =
 struct
-   open Ast
+   open Ast Fixity
 
    fun parseFile filename =
        let
@@ -43,13 +45,70 @@ struct
    fun stripMark (MarkExp(a,_)) = stripMark a
      | stripMark x = x
 
+   fun strength ty =
+       case ty of
+           VarTy(_) => 1
+        |  ConTy(tycon, args) =>
+           (case tycon
+             of [tyc] =>
+                if Symbol.eq(Symbol.tycSymbol("->"), tyc) then 0
+                else 2
+             |  _ => 2)
+        |  RecordTy _ => 2
+        |  TupleTy _ => 1
+        |  _ => 2
+
    fun pp_sym s = Symbol.name s
 
    fun pp_symbol_list symbols =
        pp_seq "." pp_sym symbols
 
 
-   fun pp_typ _ = raise Fail "Unimplemented"
+   fun ppTyvar tyv =
+       case tyv of
+           Tyv s => pp_sym s
+         | MarkTyv (t, r) => ppTyvar t
+
+
+   fun pp_typ typ =
+       let
+         fun ppTypeArgs tys =
+             case tys of
+                 [] => ""
+               | [ty] =>
+                 if strength ty <= 1
+                 then "(" ^ pp_typ ty ^ ")"
+                 else pp_typ ty
+               | _ =>
+                 "("
+                 ^ pp_seq "," pp_typ tys
+                 ^ ")"
+       in
+         case typ of
+             VarTy t => ppTyvar t
+           | ConTy (tycon, []) => pp_symbol_list tycon
+           | ConTy (tycon, args) =>
+             (case tycon of
+                  [tyc] =>
+                  if Symbol.eq (Symbol.tycSymbol("->"), tyc)
+                  then (case args of
+                            [dom, ran] => pp_typ dom
+                                          ^ " -> "
+                                          ^ pp_typ ran
+                          | _ => raise Fail "-> tycon needs 2 args")
+                  else ppTypeArgs args
+                       ^ pp_sym tyc
+                | _ => ppTypeArgs args
+                       ^ pp_symbol_list tycon)
+           | RecordTy s =>
+             "{"
+             ^ pp_seq "," (fn (sym, tv) => pp_sym sym ^ ":" ^ pp_typ tv) s
+             ^ "}"
+           | TupleTy t =>
+             "("
+             ^ pp_seq " * " pp_typ t
+           | MarkTy (t, r) => pp_typ t
+       end
 
    fun pp_pat pat =
        case pat of
@@ -81,7 +140,7 @@ struct
                          ^ ")"
          | FlatAppPat fap => pp_seq " " (fn {item, fixity, region} => pp_pat item) fap
          | ConstraintPat {pattern, constraint} => pp_pat pattern
-                                                  ^ " :"
+                                                  ^ " : "
                                                   ^ pp_typ constraint
          | AppPat {constr, argument} => pp_pat constr ^ " as " ^ pp_pat argument
          | VectorPat [] => "#[]"
@@ -259,6 +318,174 @@ struct
        ^ " => "
        ^ pp_exp exp false
 
-   and pp_dec _ = raise Fail "Unimplemented"
+   and pp_dec dec =
+       case dec of
+           ValDec (vbs, tyvars) =>
+           "val "
+           ^ pp_seq "and " ppVb vbs
+         | ValrecDec (rvbs, tyvars) =>
+           "val rec "
+           ^ pp_seq "and " ppRvb rvbs
+         | DoDec exp =>
+           "do "
+           ^ pp_exp exp false
+         | FunDec (fbs, tyvars) =>
+           "fun "
+           ^ pp_seq "and " ppFb fbs
+         | TypeDec tycs =>
+           "type "
+           ^ pp_seq " " ppTb tycs
+         | DatatypeDec {datatycs, withtycs=[]} =>
+           "datatype "
+           ^ pp_seq " " ppDb datatycs
+         | DatatypeDec {datatycs, withtycs} =>
+           "datatype "
+           ^ pp_seq " " ppDb datatycs
+           ^ "withtype "
+           ^ pp_seq " " ppTb withtycs
+         | AbstypeDec {abstycs, withtycs=[], body} =>
+           "datatype "
+           ^ pp_seq " " ppDb abstycs
+           ^ "\n"
+           ^ pp_dec body
+         | AbstypeDec {abstycs, withtycs, body} =>
+           "datatype "
+           ^ pp_seq " " ppDb abstycs
+           ^ "\n"
+           ^ "withtype "
+           ^ pp_seq " " ppTb withtycs
+           ^ "\n"
+           ^ pp_dec body
+         | ExceptionDec ebs => pp_seq " " ppEb ebs
+         | StrDec sbs => "<structure>"
+         | AbsDec sbs => "<abstraction?>"
+         | FctDec fbs => "<functor>"
+         | SigDec sigvars => "<signature>"
+         | FsigDec sigvars => "<functor signature>"
+         | LocalDec (inner, outer) =>
+           "local\n"
+           ^ pp_dec inner
+           ^ "\n" ^ "in\n"
+           ^ pp_dec outer
+           ^ "\n" ^ "end"
+         | SeqDec decs =>
+           pp_seq "\n" pp_dec decs
+         | OpenDec strbs =>
+           "open "
+           ^ pp_seq " " pp_symbol_list strbs
+         | OvldDec (sym, ty, explist) => pp_sym sym
+         | FixDec {fixity, ops} =>
+           (case fixity of
+                NONfix => "nonfix"
+              | INfix (i, _) =>
+                (if i mod 2 = 0
+                 then "infix "
+                 else "infixr ")
+                ^ (if i div 2 > 0
+                   then Int.toString (i div 2)
+                   else "")
+                ^ pp_seq " " pp_sym ops)
+         | DataReplDec (sym, path) => "datatype "
+                                      ^ pp_sym sym
+                                      ^ " = "
+                                      ^ "datatype "
+                                      ^ pp_symbol_list path
+         | MarkDec (dec, (s, e)) => pp_dec dec
+
+   and ppVb vb =
+       case vb of
+           Vb {pat, exp, ...} =>
+           pp_pat pat
+           ^ " = "
+           ^ pp_exp exp false
+         | MarkVb (vb, region) => ppVb vb
+
+   and ppRvb rvb =
+       case rvb of
+           Rvb {var, exp, ...} =>
+           pp_sym var
+           ^ " = "
+           ^ pp_exp exp false
+         | MarkRvb (rvb, region) => ppRvb rvb
+
+   and ppFb fb =
+       case fb of
+           Fb (clauses, ops) =>
+           pp_seq "  | " ppClause clauses
+         | MarkFb (fb, region) => ppFb fb
+
+   and ppClause cls =
+       case cls of
+           Clause {pats, resultty, exp} =>
+           let
+             fun ppCls {item, fixity, region} =
+                 case fixity of
+                     SOME a => pp_pat item
+                   | NONE => (case item of
+                                  FlatAppPat p => "(" ^ pp_pat item ^ ")"
+                                | ConstraintPat p => "(" ^ pp_pat item ^ ")"
+                                | LayeredPat p => "(" ^ pp_pat item ^ ")"
+                                | OrPat p => "(" ^ pp_pat item ^ ")"
+                                | _ => pp_pat item)
+           in
+             pp_seq " " ppCls pats
+             ^ (case resultty of
+                    SOME ty => ":" ^ pp_typ ty
+                  | NONE => "")
+             ^ " ="
+             ^ pp_exp exp false
+           end
+
+   and ppTb tb =
+       let
+         fun pp_tyvar_list symbol_list =
+             pp_seq "* " ppTyvar symbol_list
+       in
+         case tb of
+             Tb {tyc, def, tyvars} => pp_sym tyc
+                                      ^  " ="
+                                      ^ pp_tyvar_list tyvars
+           | MarkTb (t, r) => ppTb t
+       end
+
+   and ppDb db =
+       let
+         fun pp_tyvar_list symbol_list =
+             pp_seq ", " ppTyvar symbol_list
+       in
+         case db of
+             Db {tyc, tyvars, rhs, lazyp} => pp_tyvar_list tyvars
+                                             ^ pp_sym tyc
+                                             ^  " = "
+                                             ^ ppDbrhs rhs
+           | MarkDb (t, r) => ppDb t
+       end
+
+   and ppDbrhs rhs =
+       let
+         fun pprhs (sym, tv) =
+             case tv of
+                 SOME a => pp_sym sym
+                           ^ " of "
+                           ^ pp_typ a
+               | NONE => pp_sym sym
+       in
+         pp_seq " | " pprhs rhs
+       end
+
+   and ppEb eb =
+       case eb of
+           EbGen {exn, etype} =>
+           (case etype of
+                SOME a => pp_sym exn
+                          ^ " = "
+                          ^ pp_typ a
+              | NONE => pp_sym exn)
+         | EbDef {exn, edef} =>
+           pp_sym exn
+           ^ " = "
+           ^ pp_symbol_list edef
+         | MarkEb (t, r) => ppEb t
+
 
 end
