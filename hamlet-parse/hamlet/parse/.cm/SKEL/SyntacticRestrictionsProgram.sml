@@ -1,2 +1,0 @@
-Skeleton 5
-ad"SyntacticRestrictionsProgram"jh3egp1d"SyntaxProgram"egp1d"AnnotationProgram"f2d"SyntacticRestrictionsModule"d"BindingBasis"gp1c"SYNTACTIC_RESTRICTIONS_PROGRAM"

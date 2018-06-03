@@ -1,2 +1,0 @@
-Skeleton 5
-d2f2d"SyntaxProgram"d"SyntacticRestrictionsModule"ac"SYNTACTIC_RESTRICTIONS_PROGRAM"h0

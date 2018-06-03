@@ -1,2 +1,0 @@
-Skeleton 5
-d2f2d"SyntaxModule"d"BindingObjectsModule"ac"SYNTACTIC_RESTRICTIONS_MODULE"h0
