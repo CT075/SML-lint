@@ -1,4 +1,3 @@
-Control.Elab.unusedBindingWarn := false;
 CM.make "$smlnj/viscomp/basics.cm";
 CM.make "$smlnj/viscomp/elabdata.cm";
 
