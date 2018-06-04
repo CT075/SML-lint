@@ -6,11 +6,12 @@ is
   $smlnj/viscomp/parser.cm
   $smlnj/viscomp/basics.cm
 
-  traverse.sig
-  astExt.sig
-  astUtil.sig
+  infra/traverse.sig
+  infra/traverse.sml
 
-  traverse.sml
-  astUtil.sml
+  ast/astExt.sig
+  ast/astUtil.sig
+  ast/astUtil.sml
+
   nj-lib.sml
 
