@@ -493,7 +493,17 @@ struct
                                ^ pp_seq " " (fn s => ppStrb s env indent) sbs
                | AbsDec sbs => "<abstraction?>"
                | FctDec fbs => "<functor>"
-               | SigDec sigvars => "<signature>"
+               | SigDec sigvars =>
+                 let
+                   fun pp_sig (Sigb{name, def}) =
+                       pp_sym name
+                       ^ " = "
+                       ^ ppSigExp def env indent
+                     | pp_sig (MarkSigb (s, n)) = pp_sig s
+                 in
+                   "signature "
+                   ^ pp_seq " and " pp_sig sigvars
+                 end
                | FsigDec sigvars => "<functor signature>"
                | LocalDec (inner, outer) =>
                  "local"
@@ -649,6 +659,12 @@ struct
        case str of
            Strb {constraint, def, name} =>
            pp_sym name
+           ^ (case constraint of
+                  NoSig => ""
+                | Transparent sigexp => " : "
+                                        ^ ppSigExp sigexp env indent
+                | Opaque sigexp => " :> "
+                                   ^ ppSigExp sigexp env indent)
            ^ " = "
            ^ ppStrExp def env indent
          | MarkStrb (t, r) => ppStrb t env indent
@@ -668,9 +684,9 @@ struct
            ^ (case constraint of
                   NoSig => ""
                 | Transparent sigexp => " : "
-                                        ^ ppSigExp sigexp
+                                        ^ ppSigExp sigexp env indent
                 | Opaque sigexp => " :> "
-                                   ^ ppSigExp sigexp)
+                                   ^ ppSigExp sigexp env indent)
          | AppStr (path, str_list) =>
            pp_symbol_list path
            ^ pp_seq " " (fn (strl, _) => "(" ^ ppStrExp strl env indent ^ ")") str_list
@@ -686,5 +702,27 @@ struct
          | MarkStr (body, (s, e)) => ppStrExp body env indent
 
 
-   and ppSigExp _ = "<signature>"
+   and ppSigExp exp env indent =
+       case exp of
+           VarSig s => pp_sym s
+         | AugSig (sign, wherel) =>
+           ppSigExp sign env indent
+           ^ (case sign of
+                  VarSig s => ""
+                | MarkSig (VarSig s, _) => ""
+                | _ => newline indent)
+           ^ "where "
+           ^ pp_seq " and " (fn w => ppWhereSpec w env indent) wherel
+
+         | BaseSig [] => "sig end"
+         | BaseSig specl => "sig"
+                           ^ newline (indent ^ "  ")
+                           ^ pp_seq (newline (indent ^ "  ")) (fn s => ppSpec s env (indent ^ "  ")) specl
+                           ^ newline indent
+                           ^ "end"
+         | MarkSig (m, r) => ppSigExp m env indent
+
+   and ppWhereSpec _ _ _ = "<whereSpec>"
+   and ppSpec spec env indent = "<spec>"
+
 end
