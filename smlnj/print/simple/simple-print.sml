@@ -3,18 +3,22 @@ CM.make "$smlnj/viscomp/elabdata.cm";
 
 signature LINT =
 sig
-  val parseFile : string -> Ast.dec * StaticEnv.staticEnv
-  val pp_pat : Ast.pat -> string
-  val pp_exp : Ast.exp -> StaticEnv.staticEnv -> string
-  val pp_dec : Ast.dec -> StaticEnv.staticEnv -> string
+  type indent = string
+  val loadFile : string -> Ast.dec * StaticEnv.staticEnv
+  val writeFile : string -> string -> unit
+  val pp_pat : Ast.pat -> indent -> bool -> string
+  val pp_exp : Ast.exp -> StaticEnv.staticEnv -> indent -> string
+  val pp_dec : Ast.dec -> StaticEnv.staticEnv -> indent -> string
 end
 
 structure Lint : LINT =
 struct
    open Ast Fixity VarCon Types Tuples
 
-   (* PARSING *)
-   fun parseFile filename =
+   type indent = string
+
+   (* PARSING/ENVIRONMENT *)
+   fun loadFile filename =
        let
          val stream = TextIO.openIn filename
          val interactive = false
@@ -42,6 +46,12 @@ struct
          (ast, env)
        end
 
+   fun writeFile filename content =
+       let val fd = TextIO.openOut filename
+           val _ = TextIO.output (fd, content) handle e => (TextIO.closeOut fd; raise e)
+           val _ = TextIO.closeOut fd
+       in () end
+
 
    (* FORMATTING *)
    fun intercalate sym [] = ""
@@ -53,8 +63,28 @@ struct
          x ^ (intercalate' sym xs)
        end
 
+   fun newline s = "\n" ^ s
+
    fun pp_seq sep pr seq =
        intercalate sep (map pr seq)
+
+   fun incr_indent indent 0 = indent
+     | incr_indent indent n = incr_indent (indent ^ " ") (n - 1)
+
+   fun pp_het_seq f sym pr [] = ""
+     | pp_het_seq f sym pr [x] = pr x
+     | pp_het_seq f (sym1, sym2) pr (x::xs) =
+       let
+         fun inner_het [] = ""
+           | inner_het [y] = ""
+           | inner_het (y::z::ys) =
+             (if f y orelse f z
+             then sym2
+             else sym1)
+             ^ pr z ^ (inner_het (z::ys))
+       in
+         pr x ^ inner_het (x::xs)
+       end
 
    fun lpcond atom = if atom then "(" else ""
    fun rpcond atom = if atom then ")" else ""
@@ -87,7 +117,7 @@ struct
    fun strongerR(INfix(_,m),INfix(n,_)) = n > m
      | strongerR _ = true                  (* should not matter *)
 
-   (* SYMBOL *)
+   (* SYMBOLS *)
    fun pp_sym s = Symbol.name s
 
    fun pp_symbol_list symbols =
@@ -100,7 +130,7 @@ struct
            Tyv s => pp_sym s
          | MarkTyv (t, r) => ppTyvar t
 
-   fun pp_typ typ =
+   fun pp_typ typ indent =
        let
          fun strength ty =
              case ty of
@@ -120,11 +150,11 @@ struct
                  [] => ""
                | [ty] =>
                  if strength ty <= 1
-                 then "(" ^ pp_typ ty ^ ")"
-                 else pp_typ ty
+                 then "(" ^ pp_typ ty indent ^ ")"
+                 else pp_typ ty indent
                | _ =>
                  "("
-                 ^ pp_seq "," pp_typ tys
+                 ^ pp_seq "," (fn t => pp_typ t indent) tys
                  ^ ")"
        in
          case typ of
@@ -135,99 +165,136 @@ struct
                   [tyc] =>
                   if Symbol.eq (Symbol.tycSymbol("->"), tyc)
                   then (case args of
-                            [dom, ran] => pp_typ dom
+                            [dom, ran] => pp_typ dom indent
                                           ^ " -> "
-                                          ^ pp_typ ran
+                                          ^ pp_typ ran indent
                           | _ => raise Fail "-> tycon needs 2 args")
                   else ppTypeArgs args
+                       ^ " "
                        ^ pp_sym tyc
                 | _ => ppTypeArgs args
+                       ^ " "
                        ^ pp_symbol_list tycon)
            | RecordTy s =>
-             "{"
-             ^ pp_seq "," (fn (sym, tv) => pp_sym sym ^ ":" ^ pp_typ tv) s
-             ^ "}"
+             let
+               val records = pp_seq "," (fn (sym, tv) => pp_sym sym ^ " : " ^ pp_typ tv indent) s
+               val f_record = if String.size records > 80
+                              then pp_seq ("," ^ newline (indent ^ "  "))
+                                          (fn (sym, tv) => pp_sym sym ^ " : " ^ pp_typ tv indent) s
+                              else records
+
+             in
+               "{"
+               ^ f_record
+               ^ "}"
+             end
            | TupleTy t =>
              "("
-             ^ pp_seq " * " pp_typ t
-           | MarkTy (t, r) => pp_typ t
+             ^ pp_seq " * " (fn p => pp_typ p indent) t
+             ^ ")"
+           | MarkTy (t, r) => pp_typ t indent
        end
 
    (* PATTERNS *)
-   fun pp_pat pat =
-       case pat of
-           WildPat => "_"
-         | VarPat p => pp_symbol_list p
-         | IntPat i => IntInf.toString i
-         | WordPat w => "0w" ^ IntInf.toString w
-         | StringPat s => "\"" ^ s ^ "\""
-         | CharPat c => "#" ^  "\"" ^ c ^ "\""
-         | LayeredPat {varPat, expPat} =>
-           pp_pat varPat ^ " as " ^ pp_pat expPat
-         | RecordPat {def=[], flexibility} =>
-           if flexibility then "{...}"
-           else "()"
-         | (r as RecordPat {def, flexibility}) =>
-           if isTUPLEpat r
-           then "("
-                ^ pp_seq "," (fn (sym, pat) => pp_pat pat) def
-                ^ ")"
-           else "{"
-                ^ pp_seq "," (fn (sym, pat) => pp_sym sym ^ "=" ^ pp_pat pat) def
-                ^ "}"
-         | ListPat [] => "[]"
-         | ListPat l => "["
-                        ^ pp_seq "," pp_pat l
-                        ^ "]"
-         | TuplePat t => "("
-                         ^ pp_seq "," pp_pat t
-                         ^ ")"
-         | FlatAppPat fap => pp_seq " " (fn {item, fixity, region} => pp_pat item) fap
-         | ConstraintPat {pattern, constraint} => pp_pat pattern
-                                                  ^ " : "
-                                                  ^ pp_typ constraint
-         | AppPat {constr, argument} => pp_pat constr ^ " as " ^ pp_pat argument
-         | VectorPat [] => "#[]"
-         | VectorPat v => "#["
-                          ^ pp_seq "," pp_pat v
-                          ^ "]"
-         | MarkPat (pat, (s, e)) => pp_pat pat
-         | OrPat orpat => "("
-                          ^ pp_seq "| " pp_pat orpat
-                          ^ ")"
-
+   fun pp_pat pat indent atom =
+       let
+         fun pp_pat' pat ident atom =
+             case pat of
+                 WildPat => "_"
+               | VarPat p => pp_symbol_list p
+               | IntPat i => IntInf.toString i
+               | WordPat w => "0w" ^ IntInf.toString w
+               | StringPat s => "\"" ^ s ^ "\""
+               | CharPat c => "#" ^  "\"" ^ c ^ "\""
+               | LayeredPat {varPat, expPat} =>
+                 lpcond atom
+                 ^ pp_pat' varPat indent false ^ " as " ^ pp_pat' expPat indent false
+                 ^ rpcond atom
+               | RecordPat {def=[], flexibility} =>
+                 if flexibility then "{...}"
+                 else "()"
+               | (r as RecordPat {def, flexibility}) =>
+                 if isTUPLEpat r
+                 then "("
+                      ^ pp_seq "," (fn (sym, pat) => pp_pat' pat indent false) def
+                      ^ ")"
+                 else "{"
+                      ^ pp_seq "," (fn (sym, pat) => pp_sym sym ^ "=" ^ pp_pat' pat indent false) def
+                      ^ (if flexibility
+                         then ", ..."
+                         else "")
+                      ^ "}"
+               | ListPat [] => "[]"
+               | ListPat l => "["
+                              ^ pp_seq "," (fn p => pp_pat' p indent false) l
+                              ^ "]"
+               | TuplePat t => "("
+                               ^ pp_seq "," (fn p => pp_pat' p indent false) t
+                               ^ ")"
+               | FlatAppPat fap =>
+                 lpcond atom
+                 ^ pp_seq " " (fn {item, fixity, region} => pp_pat' item indent true) fap
+                 ^ rpcond atom
+               | ConstraintPat {pattern, constraint} =>
+                 lpcond atom
+                 ^ pp_pat' pattern indent false
+                 ^ " : "
+                 ^ pp_typ constraint indent
+                 ^ rpcond atom
+               | AppPat {constr, argument} =>
+                 lpcond atom
+                 ^ pp_pat' constr indent false ^ " as " ^ pp_pat' argument indent false
+                 ^ rpcond atom
+               | VectorPat [] => "#[]"
+               | VectorPat v => "#["
+                                ^ pp_seq "," (fn p => pp_pat' p indent false) v
+                                ^ "]"
+               | MarkPat (pat, (s, e)) => pp_pat' pat indent atom
+               | OrPat orpat => "("
+                                ^ pp_seq "| " (fn p => pp_pat' p indent false) orpat
+                                ^ ")"
+       in
+         pp_pat' pat indent atom
+       end
 
    (* EXPRESSIONS *)
 
-   fun pp_exp exp (env : StaticEnv.staticEnv) =
+   fun pp_exp exp (env : StaticEnv.staticEnv) indent =
        let
-         fun pp_exp' exp atom =
+         fun pp_exp' exp atom indent =
              case exp of
                  VarExp p => pp_symbol_list p
                | FnExp rules =>
-                 "fn " ^ (pp_seq " | " (fn r => pp_rule r env) rules)
+                 lpcond atom
+                 ^ "fn " ^ (pp_seq (newline indent ^ " | ") (fn r => pp_rule r env (indent ^ " ")) rules)
+                 ^ rpcond atom
                | FlatAppExp fap =>
-                 pp_seq " " (fn {item, fixity, region} => pp_exp' item true) fap
+                 pp_seq " " (fn {item, fixity, region} => pp_exp' item true indent) fap
                | AppExp e => (lpcond atom)
-                             ^ pp_app_exp (AppExp e, nullFix, nullFix) atom
+                             ^ pp_app_exp (AppExp e, nullFix, nullFix) atom indent
                              ^ (rpcond atom)
                | CaseExp {expr, rules} =>
                  "(case "
-                 ^ pp_exp' expr true
-                 ^ "of \n"
-                 ^ (pp_seq "\n | " (fn r => pp_rule r env) rules)
+                 ^ pp_exp' expr true indent
+                 ^ " of"
+                 ^ newline (indent ^ "   ")
+                 ^ (pp_seq (newline indent ^ " | ") (fn r => pp_rule r env (indent ^ " ")) rules)
                  ^ ")"
                | LetExp {dec, expr} =>
-                 " let\n"
-                 ^ pp_dec dec env
-                 ^ "\n in\n"
-                 ^ pp_exp' expr false
-                 ^ "\n end"
+                 "let"
+                 ^ newline (indent ^ "  ")
+                 ^ pp_dec dec env (indent ^ "  ")
+                 ^ indent
+                 ^ "in"
+                 ^ newline (indent ^ "  ")
+                 ^ pp_exp' expr false (indent ^ "  ")
+                 ^ newline indent
+                 ^ "end"
                | SeqExp exps =>
                  let
                    fun parenThunk () =
                        "("
-                       ^ pp_seq ";" (fn exp => pp_exp' exp false) exps
+                       ^ pp_seq (";" ^ newline indent) (fn exp => pp_exp' exp false indent) exps
                        ^ ")"
                    fun subExpCount (MarkExp (expr, _)) = subExpCount expr
                      | subExpCount (FlatAppExp subexps) = length subexps
@@ -235,28 +302,28 @@ struct
                  in
                    case exps
                     of [expr] => if (subExpCount expr) < 2
-                                 then pp_exp' expr false
+                                 then pp_exp' expr atom indent
                                  else parenThunk()
                      | _ => parenThunk()
                  end
                | IntExp i => IntInf.toString i
                | WordExp w => "0w" ^ IntInf.toString w
                | RealExp r => r
-               | StringExp s => "\"" ^ s ^ "\""
+               | StringExp s => "\"" ^ (String.toString s) ^ "\""
                | CharExp c => "#" ^  "\"" ^ c ^ "\""
                | (r as RecordExp fields) =>
                  if isTUPLEexp r
                  then "("
-                      ^ pp_seq "," (fn (_, exp) => pp_exp' exp false) fields
+                      ^ pp_seq ", " (fn (_, exp) => pp_exp' exp false indent) fields
                       ^ ")"
                  else "{"
-                      ^ pp_seq "," (fn (name, exp) => (pp_sym name) ^ "=" ^ pp_exp' exp false) fields
+                      ^ pp_seq ", " (fn (name, exp) => (pp_sym name) ^ "=" ^ pp_exp' exp false indent) fields
                       ^ "}"
                | ListExp p => "["
-                              ^ pp_seq "," (fn exp => pp_exp' exp false) p
+                              ^ pp_seq ", " (fn exp => pp_exp' exp false indent) p
                               ^ "]"
                | TupleExp p => "("
-                               ^ pp_seq "," (fn exp => pp_exp' exp false) p
+                               ^ pp_seq ", " (fn exp => pp_exp' exp false indent) p
                                ^ ")"
                | SelectorExp name =>
                  lpcond atom
@@ -265,59 +332,63 @@ struct
                  ^ rpcond atom
                | ConstraintExp {expr, constraint} =>
                  lpcond atom
-                 ^ pp_exp' expr false
+                 ^ pp_exp' expr false indent
                  ^ ":"
-                 ^ pp_typ constraint
+                 ^ pp_typ constraint indent
                  ^ rpcond atom
                | HandleExp {expr, rules} =>
                  lpcond atom
-                 ^ pp_exp' expr atom
-                 ^ "handle "
-                 ^ pp_seq "| " (fn r => pp_rule r env) rules
+                 ^ pp_exp' expr atom indent
+                 ^ " handle "
+                 ^ pp_seq (newline indent ^ " | ") (fn r => pp_rule r env (indent ^ " ")) rules
                  ^ rpcond atom
                | RaiseExp exp =>
                  lpcond atom
-                 ^ "raise "
-                 ^ pp_exp' exp true
+                 ^ " raise "
+                 ^ pp_exp' exp true indent
                  ^ rpcond atom
                | IfExp {test, thenCase, elseCase} =>
                  lpcond atom
                  ^ "if "
-                 ^ pp_exp' test false
+                 ^ pp_exp' test false (indent ^ " ")
+                 ^ newline indent
                  ^ "then "
-                 ^ pp_exp' thenCase false
+                 ^ pp_exp' thenCase false (indent ^ " ")
+                 ^ newline indent
                  ^ "else "
-                 ^ pp_exp' elseCase false
+                 ^ pp_exp' elseCase false (indent ^ " ")
                  ^ rpcond atom
                | AndalsoExp (e1, e2) =>
                  lpcond atom
-                 ^ pp_exp' e1 true
-                 ^ "andalso "
-                 ^ pp_exp' e2 true
+                 ^ pp_exp' e1 true indent
+                 ^ " andalso "
+                 ^ pp_exp' e2 true indent
                  ^ rpcond atom
                | OrelseExp (e1, e2) =>
                  lpcond atom
-                 ^ pp_exp' e1 true
-                 ^ "orelse "
-                 ^ pp_exp' e2 true
+                 ^ pp_exp' e1 true indent
+                 ^ " orelse "
+                 ^ pp_exp' e2 true indent
                  ^ rpcond atom
                | WhileExp {test, expr} =>
                  "while "
-                 ^ pp_exp' test false
+                 ^ pp_exp' test false indent
+                 ^ newline indent
                  ^ "do "
-                 ^ pp_exp' expr false
+                 ^ newline (indent ^ " ")
+                 ^ pp_exp' expr false (indent ^ " ")
                | VectorExp [] => "#[]"
                | VectorExp exps =>
                  "#["
-                 ^ pp_seq "," (fn exp => pp_exp' exp false) exps
+                 ^ pp_seq "," (fn exp => pp_exp' exp false indent) exps
                  ^ "]"
                | MarkExp (exp, (s, e)) =>
                  (* If we want to modify a file in place, then the
                   * source location information will be useful, so
                   * we'll want to change this *)
-                 pp_exp' exp atom
+                 pp_exp' exp atom indent
 
-         and pp_app_exp (exp, left, right) (atom : bool) =
+         and pp_app_exp (exp, left, right) (atom : bool) indent =
              let
                fun stripMark (MarkExp(a,_)) = stripMark a
                  | stripMark x = x
@@ -328,7 +399,7 @@ struct
                      val thisFix = case name of
                                        [id] => lookFIX (env, id)
                                      | _ => NONfix
-                     fun prNon exp = pp_exp' exp true
+                     fun prNon exp = pp_exp' exp true indent
                    in
                      case thisFix of
                          INfix _ =>  (case stripMark rand of
@@ -340,9 +411,9 @@ struct
                                                                 else (leftFix, rightFix)
                                           in
                                             lpcond atom
-                                            ^ pp_app_exp (pl, left, thisFix) atom
+                                            ^ pp_app_exp (pl, left, thisFix) atom indent
                                             ^ " " ^ dname ^ " "
-                                            ^ pp_app_exp (pr, thisFix, right) atom
+                                            ^ pp_app_exp (pr, thisFix, right) atom indent
                                             ^ rpcond atom
                                           end
                                         | e' => prNon e')
@@ -352,7 +423,7 @@ struct
                fun appPrint (AppExp {function=rator, argument=rand}, l, r) =
                    (case stripMark rator of
                         VarExp v => fixitypp (v, rand, l, r)
-                     |  rator => (pp_exp' rator atom) ^ " " ^ (pp_exp' rand atom))
+                     |  rator => (pp_exp' rator atom indent) ^ " " ^ (pp_exp' rand atom indent))
                  | appPrint (MarkExp (exp, (s, e)), l, r) =
                    (* If we want to modify a file in place, then the
                     * source location information will be useful, so
@@ -363,153 +434,179 @@ struct
                appPrint (exp, left, right)
              end
        in
-         pp_exp' exp false
+         pp_exp' exp false indent
        end
 
-   and pp_rule (Rule {pat, exp}) env =
-        pp_pat pat
-        ^ " => "
-        ^ pp_exp exp env
-
+   and pp_rule (Rule {pat, exp}) env indent =
+       let
+         val patrn = pp_pat pat indent false
+       in
+         patrn
+         ^ " => "
+         ^ pp_exp exp env (incr_indent indent (String.size patrn + 6))
+       end
 
    (* DECLARATIONS *)
-   and pp_dec dec env =
+   and pp_dec dec env indent =
        let
-         fun pp_dec' dec =
+         fun pp_dec' dec indent =
              case dec of
                  ValDec (vbs, tyvars) =>
                  "val "
-                 ^ pp_seq "and " (fn v => ppVb v env) vbs
+                 ^ pp_seq (newline indent ^ "and ") (fn v => ppVb v env indent) vbs
                | ValrecDec (rvbs, tyvars) =>
                  "val rec "
-                 ^ pp_seq "and " (fn r => ppRvb r env) rvbs
+                 ^ pp_seq (newline indent ^ "and ") (fn r => ppRvb r env indent) rvbs
                | DoDec exp =>
                  "do "
-                 ^ pp_exp exp env
+                 ^ pp_exp exp env indent
                | FunDec (fbs, tyvars) =>
                  "fun "
-                 ^ pp_seq "and " (fn f => ppFb f env) fbs
+                 ^ pp_seq (newline indent ^ "and ") (fn f => ppFb f env indent) fbs
                | TypeDec tycs =>
                  "type "
-                 ^ pp_seq " " ppTb tycs
+                 ^ pp_seq " " (fn t => ppTb t indent) tycs
                | DatatypeDec {datatycs, withtycs=[]} =>
                  "datatype "
-                 ^ pp_seq " " ppDb datatycs
+                 ^ pp_seq " " (fn d => ppDb d indent) datatycs
                | DatatypeDec {datatycs, withtycs} =>
                  "datatype "
-                 ^ pp_seq " " ppDb datatycs
+                 ^ pp_seq " " (fn d => ppDb d indent) datatycs
+                 ^ newline indent
                  ^ "withtype "
-                 ^ pp_seq " " ppTb withtycs
+                 ^ pp_seq " " (fn t => ppTb t indent) withtycs
                | AbstypeDec {abstycs, withtycs=[], body} =>
                  "datatype "
-                 ^ pp_seq " " ppDb abstycs
-                 ^ "\n"
-                 ^ pp_dec' body
+                 ^ pp_seq " " (fn d => ppDb d indent) abstycs
+                 ^ newline indent
+                 ^ pp_dec' body indent
                | AbstypeDec {abstycs, withtycs, body} =>
                  "datatype "
-                 ^ pp_seq " " ppDb abstycs
-                 ^ "\n"
+                 ^ pp_seq " " (fn d => ppDb d indent) abstycs
+                 ^ newline indent
                  ^ "withtype "
-                 ^ pp_seq " " ppTb withtycs
-                 ^ "\n"
-                 ^ pp_dec' body
-               | ExceptionDec ebs => pp_seq " " ppEb ebs
-               | StrDec sbs => "<structure>"
+                 ^ pp_seq " " (fn t => ppTb t indent) withtycs
+                 ^ newline indent
+                 ^ pp_dec' body indent
+               | ExceptionDec ebs => pp_seq " " (fn p => ppEb p indent) ebs
+               | StrDec sbs => "structure "
+                               ^ pp_seq " " (fn s => ppStrb s env indent) sbs
                | AbsDec sbs => "<abstraction?>"
                | FctDec fbs => "<functor>"
                | SigDec sigvars => "<signature>"
                | FsigDec sigvars => "<functor signature>"
                | LocalDec (inner, outer) =>
-                 "local\n"
-                 ^ pp_dec' inner
-                 ^ "\n" ^ "in\n"
-                 ^ pp_dec' outer
-                 ^ "\n" ^ "end"
+                 "local"
+                 ^ "\n"
+                 ^ pp_dec' inner (indent ^ "  ")
+                 ^ newline indent
+                 ^ "in"
+                 ^ "\n"
+                 ^ pp_dec' outer (indent ^ "  ")
+                 ^ newline indent
+                 ^ "end"
                | SeqDec decs =>
-                 pp_seq "\n" pp_dec' decs
+                 pp_het_seq (fn FunDec _ => true
+                              | MarkDec (FunDec _, _) => true
+                              | _ => false)
+                            (newline indent, newline indent ^ newline indent)
+                            (fn d => pp_dec' d indent)
+                            decs
+                 ^ "\n"
                | OpenDec strbs =>
                  "open "
                  ^ pp_seq " " pp_symbol_list strbs
                | OvldDec (sym, ty, explist) => pp_sym sym
                | FixDec {fixity, ops} =>
                  (case fixity of
-                      NONfix => "nonfix"
-                    | INfix (i, _) =>
-                      (if i mod 2 = 0
-                       then "infix "
-                       else "infixr ")
-                      ^ (if i div 2 > 0
-                         then Int.toString (i div 2)
-                         else "")
-                      ^ pp_seq " " pp_sym ops)
+                        NONfix => "nonfix"
+                      | INfix (i, _) =>
+                        (if i mod 2 = 0
+                         then "infix "
+                         else "infixr ")
+                        ^ (if i div 2 > 0
+                           then Int.toString (i div 2)
+                           else "")
+                        ^ pp_seq " " pp_sym ops)
                | DataReplDec (sym, path) => "datatype "
                                             ^ pp_sym sym
                                             ^ " = "
                                             ^ "datatype "
                                             ^ pp_symbol_list path
-               | MarkDec (dec, (s, e)) => pp_dec' dec
+               | MarkDec (dec, (s, e)) => pp_dec' dec indent
        in
-         pp_dec' dec
+         pp_dec' dec indent
        end
 
    (* BINDINGS *)
-   and ppVb vb env =
+   and ppVb vb env indent =
        case vb of
            Vb {pat, exp, ...} =>
-           pp_pat pat
-           ^ " = "
-           ^ pp_exp exp env
-         | MarkVb (vb, region) => ppVb vb env
+           let
+             val patrn = pp_pat pat indent false
+             val size = String.size patrn
+           in
+             patrn
+             ^ " = "
+             ^ (let
+                 fun exp_p n_ind = pp_exp exp env n_ind
+                 val exp_ind = exp_p (incr_indent indent (size + 2))
+               in
+                 if String.size exp_ind + size + 2 > 80
+                 then newline (indent ^ "  ") ^ (exp_p (indent ^ "  "))
+                 else exp_ind
+               end)
+           end
+         | MarkVb (vb, region) => ppVb vb env indent
 
-   and ppRvb rvb env =
+   and ppRvb rvb env indent =
        case rvb of
            Rvb {var, exp, ...} =>
            pp_sym var
            ^ " = "
-           ^ pp_exp exp env
-         | MarkRvb (rvb, region) => ppRvb rvb env
+           ^ pp_exp exp env indent
+         | MarkRvb (rvb, region) => ppRvb rvb env indent
 
-   and ppFb fb env =
+   and ppFb fb env indent =
        case fb of
            Fb (clauses, ops) =>
-           pp_seq "  | " (fn c => ppClause c env) clauses
-         | MarkFb (fb, region) => ppFb fb env
+           pp_seq (newline indent ^ "  | ") (fn c => ppClause c env (indent ^ "  ")) clauses
+         | MarkFb (fb, region) => ppFb fb env indent
 
-   and ppClause cls env =
+   and ppClause cls env indent =
        case cls of
            Clause {pats, resultty, exp} =>
            let
-             fun ppCls {item, fixity, region} =
-                 case fixity of
-                     SOME a => pp_pat item
-                   | NONE => (case item of
-                                  FlatAppPat p => "(" ^ pp_pat item ^ ")"
-                                | ConstraintPat p => "(" ^ pp_pat item ^ ")"
-                                | LayeredPat p => "(" ^ pp_pat item ^ ")"
-                                | OrPat p => "(" ^ pp_pat item ^ ")"
-                                | _ => pp_pat item)
+             fun ppCls {item, fixity, region} = pp_pat item indent true
            in
              pp_seq " " ppCls pats
              ^ (case resultty of
-                    SOME ty => ":" ^ pp_typ ty
+                    SOME ty => " : " ^ pp_typ ty indent
                   | NONE => "")
-             ^ " ="
-             ^ pp_exp exp env
+             ^ " = "
+             ^ (let
+                 val exp = pp_exp exp env (indent ^ "  ")
+               in
+                 if String.size exp > 20
+                 then newline (indent ^ "  ") ^ exp
+                 else exp
+               end)
            end
 
-   and ppTb tb =
+   and ppTb tb indent =
        let
          fun pp_tyvar_list symbol_list =
              pp_seq "* " ppTyvar symbol_list
        in
          case tb of
              Tb {tyc, def, tyvars} => pp_sym tyc
-                                      ^  " ="
+                                      ^  " = "
+                                      ^ pp_typ def indent
                                       ^ pp_tyvar_list tyvars
-           | MarkTb (t, r) => ppTb t
+           | MarkTb (t, r) => ppTb t indent
        end
 
-   and ppDb db =
+   and ppDb db indent =
        let
          fun pp_tyvar_list symbol_list =
              pp_seq ", " ppTyvar symbol_list
@@ -518,35 +615,76 @@ struct
              Db {tyc, tyvars, rhs, lazyp} => pp_tyvar_list tyvars
                                              ^ pp_sym tyc
                                              ^  " = "
-                                             ^ ppDbrhs rhs
-           | MarkDb (t, r) => ppDb t
+                                             ^ ppDbrhs rhs indent
+           | MarkDb (t, r) => ppDb t indent
        end
 
-   and ppDbrhs rhs =
+   and ppDbrhs rhs indent =
        let
          fun pprhs (sym, tv) =
              case tv of
                  SOME a => pp_sym sym
                            ^ " of "
-                           ^ pp_typ a
+                           ^ pp_typ a indent
                | NONE => pp_sym sym
        in
-         pp_seq " | " pprhs rhs
+         pp_seq (newline indent ^ " | ") pprhs rhs
        end
 
-   and ppEb eb =
+   and ppEb eb indent =
        case eb of
            EbGen {exn, etype} =>
            (case etype of
                 SOME a => pp_sym exn
                           ^ " = "
-                          ^ pp_typ a
+                          ^ pp_typ a indent
               | NONE => pp_sym exn)
          | EbDef {exn, edef} =>
            pp_sym exn
            ^ " = "
            ^ pp_symbol_list edef
-         | MarkEb (t, r) => ppEb t
+         | MarkEb (t, r) => ppEb t indent
+
+   and ppStrb str env indent =
+       case str of
+           Strb {constraint, def, name} =>
+           pp_sym name
+           ^ " = "
+           ^ ppStrExp def env indent
+         | MarkStrb (t, r) => ppStrb t env indent
+
+   and ppStrExp str env indent =
+       case str of
+           VarStr p => pp_symbol_list p
+         | BaseStr (SeqDec []) => "struct end"
+         | BaseStr de => newline indent
+                         ^ "struct"
+                         ^ newline (indent ^ "  ")
+                         ^ pp_dec de env (indent ^ "  ")
+                         ^ newline indent
+                         ^ "end"
+         | ConstrainedStr (stre, constraint) =>
+           ppStrExp stre env indent
+           ^ (case constraint of
+                  NoSig => ""
+                | Transparent sigexp => " : "
+                                        ^ ppSigExp sigexp
+                | Opaque sigexp => " :> "
+                                   ^ ppSigExp sigexp)
+         | AppStr (path, str_list) =>
+           pp_symbol_list path
+           ^ pp_seq " " (fn (strl, _) => "(" ^ ppStrExp strl env indent ^ ")") str_list
+         | AppStrI (path, str_list) =>
+           pp_symbol_list path
+           ^ pp_seq " " (fn (strl, _) => "(" ^ ppStrExp strl env indent ^ ")") str_list
+         | LetStr (dec, body) =>
+           "let\n"
+           ^ pp_dec dec env indent
+           ^ "\n" ^ "in\n"
+           ^ ppStrExp body env indent
+           ^ "\n" ^ "end"
+         | MarkStr (body, (s, e)) => ppStrExp body env indent
 
 
+   and ppSigExp _ = "<signature>"
 end
