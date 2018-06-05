@@ -10,8 +10,14 @@ is
   infra/traverse.sml
 
   ast/astExt.sig
+  ast/astFunc.sig
+  ast/astExt.sml
   ast/astUtil.sig
   ast/astUtil.sml
+
+  rules/rules.sig
+  rules/rules.sml
+  rules/util.sml
 
   nj-lib.sml
 

@@ -1,12 +1,14 @@
+
 signature AST_UTIL = sig
   structure A : AST
-
   include AST_EXT
 
-  type expr
-  include TRAVERSE where type t = expr
+  datatype uexpr = Unify of exp * uexpr expF
 
-  val into : A.exp -> expr
-  val out : expr -> A.exp
+  val prj : uexpr -> (exp * uexpr expF)
+  val inj : (exp * uexpr expF) -> uexpr
+
+  val Out : uexpr -> exp
+  val Into : exp -> uexpr
 end
 
