@@ -5,7 +5,7 @@ signature MAPPABLE = sig
   val fmap : ('a -> 'b) -> 'a t -> 'b t
 end
 
-functor Traverse(M: MAPPABLE) : TRAVERSE =
+functor MkTraverse(M: MAPPABLE) : TRAVERSE =
 struct
   infix 2 <<<
   infix 2 >>>

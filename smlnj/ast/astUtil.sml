@@ -1,4 +1,4 @@
-functor ExtAST(A: AST
+functor MkExtAST(A: AST
   where type srcpos = int
   and type region = int * int
   and type 'a fixitem = {item:'a, fixity:Symbol.symbol option, region:int*int}
@@ -73,7 +73,7 @@ struct
       ClauseF of {pats : pat fixitem list, resultty : ty option, exp : 'a}
 end
 
-functor ASTMap(A: AST_EXT) : MAPPABLE =
+functor MkASTMap(A: AST_EXT) : MAPPABLE =
 struct
   open A
 
@@ -161,9 +161,9 @@ end
 
 structure ASTUtil : AST_UTIL = struct
   structure A = Ast
-  structure A' = ExtAST(Ast)
-  structure M = ASTMap(A')
-  structure T = Traverse(M)
+  structure A' = MkExtAST(Ast)
+  structure M = MkASTMap(A')
+  structure T = MkTraverse(M)
 
   open A'
   open M
