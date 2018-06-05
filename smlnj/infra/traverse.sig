@@ -7,5 +7,8 @@ signature TRAVERSE = sig
 
   val cata : ('a f -> 'a) -> t -> 'a
   val ana : ('a -> 'a f) -> 'a -> t
+
+  val para : ((t * 'a) f -> 'a) -> t -> 'a
+  val apo : ('a -> ((t, 'a) Either.either) f) -> 'a -> t
 end
 

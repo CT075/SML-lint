@@ -21,5 +21,20 @@ struct
 
   fun cata f = prj >>> M.fmap (cata f) >>> f
   fun ana f = inj <<< M.fmap (ana f) <<< f
+
+  open Either
+
+  fun para f =
+    let fun fanout t = (t, para f t)
+    in prj >>> M.fmap fanout >>> f
+    end
+
+  fun apo f =
+    let
+      fun fanin (INL a) = a
+        | fanin (INR b) = apo f b
+    in
+      inj <<< M.fmap fanin <<< f
+    end
 end
 
