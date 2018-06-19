@@ -38,6 +38,6 @@ struct
       (f: (AF.exp * 'a expF) -> 'a)
       (g: (AF.exp * ('a * 'b) expF) -> 'b)
       : uexpr -> 'b =
-    snd <<< teardown ((f o M.fmap fst) &&& g)
+    snd <<< teardown ((f o second (M.fmap fst)) &&& g)
 end
 
