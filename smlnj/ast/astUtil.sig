@@ -10,5 +10,13 @@ signature AST_UTIL = sig
 
   val Out : uexpr -> exp
   val Into : exp -> uexpr
+
+  val build : (A.exp -> A.exp expF) -> A.exp -> uexpr
+  val teardown : (A.exp * 'a expF -> 'a) -> uexpr -> 'a
+
+  val collapseVia :
+    (A.exp * 'a expF -> 'a) ->
+    (A.exp * ('a*'b) expF -> 'b) ->
+    uexpr -> 'b
 end
 
